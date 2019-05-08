@@ -114,23 +114,20 @@ best effect.
 
 This option does not affect file contents."
   :type '(choice (integer 70) (float 0.5))
-  :safe 'numberp
-  :group 'olivetti)
+  :safe 'numberp)
 (make-variable-buffer-local 'olivetti-body-width)
 
 (defcustom olivetti-minimum-body-width
   40
   "Minimum width in columns that text body width may be set."
   :type 'integer
-  :safe 'integerp
-  :group 'olivetti)
+  :safe 'integerp)
 
 (defcustom olivetti-lighter
   " Olv"
   "Mode-line indicator for `olivetti-mode'."
   :type '(choice (const :tag "No lighter" "") string)
-  :safe 'stringp
-  :group 'olivetti)
+  :safe 'stringp)
 
 (defcustom olivetti-recall-visual-line-mode-entry-state
   t
@@ -140,16 +137,12 @@ When non-nil, if `visual-line-mode' is inactive upon activating
 `olivetti-mode', then `visual-line-mode' will be deactivated upon
 exiting. The reverse is not true."
   :type 'boolean
-  :safe 'booleanp
-  :group 'olivetti)
+  :safe 'booleanp)
 
 
 ;;; Set Environment
 
-;; FIXME: A change to `window-size-change-functions' in 27.x breaks this
-;; function, which expects either no argument, or a frame (as per 26.1), but now
-;; may receive a window.
-(defun olivetti-set-margins (&optional frame)
+(defun olivetti--set-margins ()
   "Set text body width to `olivetti-body-width' with relative margins.
 
 Cycle through all windows displaying current buffer and first
@@ -158,10 +151,23 @@ find the `olivetti-safe-width' to which to set
 relative to each window. Finally set the window margins, taking
 care that the maximum size is 0."
   (dolist (window (get-buffer-window-list nil nil t))
-    (olivetti-reset-window window)
-    (let ((width (olivetti-safe-width olivetti-body-width window))
-          (window-width (window-total-width window))
-          (fringes (window-fringes window))
+    (olivetti--set-window-margins window)))
+
+(defun olivetti--set-window-margins (window-or-frame)
+  "Set text body width to `olivetti-body-width' with relative margins.
+First find the `olivetti-safe-width' to which to set
+`olivetti-body-width', then find the appropriate margin size
+relative to each window. Finally set the window margins, taking
+care that the maximum size is 0."
+  (if (framep window-or-frame)
+      ;; Emacs<27 calling style.
+      (mapc #'olivetti--set-window-margins
+            (get-buffer-window-list nil nil frame))
+    (olivetti-reset-window window-or-frame)
+    (let ((width (olivetti-safe-width olivetti-body-width window-or-frame))
+          (frame (window-frame window-or-frame))
+          (window-width (window-total-width window-or-frame))
+          (fringes (window-fringes window-or-frame))
           left-fringe right-fringe margin-total left-margin right-margin)
       (cond ((integerp width)
              (setq width (olivetti-scale-width width)))
@@ -172,8 +178,8 @@ care that the maximum size is 0."
       (setq margin-total (max (/ (- window-width width) 2) 0)
             left-margin (max (round (- margin-total left-fringe)) 0)
             right-margin (max (round (- margin-total right-fringe)) 0))
-      (set-window-parameter window 'split-window 'olivetti-split-window)
-      (set-window-margins window left-margin right-margin))))
+      (set-window-parameter window-or-frame 'split-window 'olivetti-split-window)
+      (set-window-margins window-or-frame left-margin right-margin))))
 
 (defun olivetti-reset-all-windows ()
   "Remove Olivetti's parameters and margins from all windows.
@@ -234,7 +240,9 @@ May return a float with many digits of precision."
           ((floatp width)
            (max (/ min-width window-width) (min width 1.0)))
           ((user-error "`olivetti-body-width' must be an integer or a float")
-           (eval (car (get 'olivetti-body-width 'standard-value)))))))
+           ;; FIXME: This code is unreachable since we signal an error before
+           ;; getting here!?
+           (eval (car (get 'olivetti-body-width 'standard-value)) t)))))
 
 
 ;;; Width Interaction
@@ -249,7 +257,7 @@ fraction of the window width."
              (read-number "Set text body width (integer or float): "
                           olivetti-body-width))))
   (setq olivetti-body-width n)
-  (olivetti-set-margins)
+  (olivetti--set-margins)
   (message "Text body width set to %s" olivetti-body-width))
 
 (defun olivetti-expand (&optional arg)
@@ -263,7 +271,7 @@ If prefixed with ARG, incrementally decrease."
                   ((floatp olivetti-body-width)
                    (+ olivetti-body-width (* 0.01 p))))))
     (setq olivetti-body-width (olivetti-safe-width n (selected-window))))
-  (olivetti-set-margins)
+  (olivetti--set-margins)
   (message "Text body width set to %s" olivetti-body-width)
   (set-transient-map
    (let ((map (make-sparse-keymap)))
@@ -290,7 +298,7 @@ If prefixed with ARG, incrementally increase."
   "Mode map for `olivetti-mode'.")
 
 (define-obsolete-function-alias 'turn-on-olivetti-mode
-  'olivetti-mode "1.7.0")
+  #'olivetti-mode "1.7.0")
 
 ;;;###autoload
 (define-minor-mode olivetti-mode
@@ -302,19 +310,20 @@ body width set with `olivetti-body-width'."
   :lighter olivetti-lighter
   (if olivetti-mode
       (progn
-        (dolist (hook '(post-command-hook
-                        window-size-change-functions))
-          (add-hook hook 'olivetti-set-margins t t))
+        (add-hook 'window-size-change-functions
+                  #'olivetti--set-window-margins t t)
+        ;; FIXME: Do we really still need this post-command-hook in
+        ;; Emacs-27?
+        (add-hook 'post-command-hook 'olivetti--set-margins t t)
         (add-hook 'change-major-mode-hook
-                  'olivetti-reset-all-windows nil t)
+                  #'olivetti-reset-all-windows nil t)
         (setq-local split-window-preferred-function
-                    'olivetti-split-window-sensibly)
+                    #'olivetti-split-window-sensibly)
         (setq olivetti--visual-line-mode visual-line-mode)
         (unless olivetti--visual-line-mode (visual-line-mode 1))
-        (olivetti-set-margins))
-    (dolist (hook '(post-command-hook
-                    window-size-change-functions))
-      (remove-hook hook 'olivetti-set-margins t))
+        (olivetti--set-margins))
+    (remove-hook 'post-command-hook #'olivetti--set-margins t)
+    (remove-hook 'window-size-change-functions #'olivetti--set-window-margins t)
     (olivetti-reset-all-windows)
     (when (and olivetti-recall-visual-line-mode-entry-state
                (not olivetti--visual-line-mode))
